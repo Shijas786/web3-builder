@@ -1,0 +1,135 @@
+name: Auto Collab Contributions
+
+on:
+  schedule:
+    - cron: '15 9 * * *'   # Morning UTC
+    - cron: '45 16 * * *'  # Afternoon UTC
+  workflow_dispatch:
+
+jobs:
+  collab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Persist branch name
+        id: bn
+        run: echo "name=branch::auto-$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Random delay
+        run: |
+          S=$((RANDOM % 900))
+          echo "Sleeping $S sec"
+          sleep $S
+
+      - name: Run generator
+        env:
+          DEPLOY_ENABLED: ${{ secrets.DEPLOY_ENABLED }}
+        run: node generate_and_commit.mjs
+
+      - name: Generate mini app (variable chance by day)
+        run: node -e "import('./randomness.mjs').then(m=>{if(m.shouldCreateMiniApp()){console.log('Creating mini app...');require('child_process').execSync('node generate_miniapp.mjs',{stdio:'inherit'})}else{console.log('Skipping mini app this run')}})"
+
+      - name: Human-like tweaks
+        run: node human_edit.mjs
+
+      - name: Push to branch (origin)
+        run: |
+          branch="${{ steps.bn.outputs.branch }}"
+          git checkout -b $branch
+          git add .
+          MSG=$(node -e "import('./randomness.mjs').then(m=>console.log(m.getRandomCommitMessage()))")
+          git commit -m "$MSG"
+          git push origin $branch
+
+      - name: Create PR (origin → main)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+        run: node -e 'import("./randomness.mjs").then(r=>import("./github.mjs").then(m=>m.createPR("${{ steps.bn.outputs.branch }}",r.getRandomPRTitle(), process.env.GITHUB_OWNER)))'
+
+      - name: Issues management with caps
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+        run: node -e 'import("./github.mjs").then(m=>m.maybeCreateIssue()).then(()=>m.maybeCloseIssue())'
+
+  collab-fork:
+    if: ${{ vars.ENABLE_FORK_FLOW == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Persist branch name
+        id: bnf
+        run: echo "name=branch::auto-$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Random delay
+        run: |
+          S=$((RANDOM % 900))
+          echo "Sleeping $S sec"
+          sleep $S
+
+      - name: Run generator
+        env:
+          DEPLOY_ENABLED: ${{ secrets.DEPLOY_ENABLED }}
+        run: node generate_and_commit.mjs
+
+      - name: Generate mini app (variable chance by day)
+        run: node -e "import('./randomness.mjs').then(m=>{if(m.shouldCreateMiniApp()){console.log('Creating mini app...');require('child_process').execSync('node generate_miniapp.mjs',{stdio:'inherit'})}else{console.log('Skipping mini app this run')}})"
+
+      - name: Human-like tweaks
+        run: node human_edit.mjs
+
+      - name: Ensure fork
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+        run: node -e 'import("./github.mjs").then(m=>m.ensureFork())'
+
+      - name: Add fork remote
+        env:
+          FORK_OWNER: ${{ secrets.FORK_OWNER || github.repository_owner }}
+        run: |
+          git remote add fork https://github.com/${FORK_OWNER}/${{ github.event.repository.name }}.git || true
+          git remote -v | cat
+
+      - name: Push to fork branch
+        env:
+          FORK_OWNER: ${{ secrets.FORK_OWNER || github.repository_owner }}
+        run: |
+          branch="${{ steps.bnf.outputs.branch }}"
+          git checkout -b $branch
+          git add .
+          MSG=$(node -e "import('./randomness.mjs').then(m=>console.log(m.getRandomCommitMessage()))")
+          git commit -m "$MSG"
+          git push fork $branch
+
+      - name: Create PR (fork → upstream main)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+          FORK_OWNER: ${{ secrets.FORK_OWNER || github.repository_owner }}
+        run: node -e 'import("./randomness.mjs").then(r=>import("./github.mjs").then(m=>m.createPR("${{ steps.bnf.outputs.branch }}",r.getRandomPRTitle(), process.env.FORK_OWNER)))'
